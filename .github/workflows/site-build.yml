@@ -80,43 +80,42 @@ jobs:
           MANIFEST_SHA: ${{ steps.manifest.outputs.sha256 }}
         run: |
           set -euo pipefail
-          DEST="gs://${BUCKET}/${FOLDER}builds/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          gcloud storage cp --recursive "${OUT_DIR}/*" "${DEST}/files/"
-          gcloud storage cp "${RUNNER_TEMP}/manifest.json" "${DEST}/manifest.json"
-          TOKEN=$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=dojobytes-site-build:${MANIFEST_SHA}" | jq -r .value)
-          echo "::add-mask::${TOKEN}"
-          printf '%s' "${TOKEN}" > "${RUNNER_TEMP}/provenance.jwt"
-          gcloud storage cp "${RUNNER_TEMP}/provenance.jwt" "${DEST}/provenance.jwt"
-          echo "TOKEN_FILE=${RUNNER_TEMP}/provenance.jwt" >> "$GITHUB_ENV"
-      - name: Avvisa la piattaforma
-        run: |
-          set -uo pipefailundefined) config[k] = h[k]; } catch {}
-          let requires = []; try { requires = JSON.parse(fs.readFileSync("dojobytes.site.json", "utf8")).requires || []; } catch {}
-          const m = JSON.stringify({ schema: "dojobytes.site-build/1", files, config, requires });
-          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, "manifest.json"), m);
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, "sha256=" + crypto.createHash("sha256").update(m).digest("hex") + "\n");
-          console.log(files.length + " file nel manifest");
+          # v2: caricamento con l'API JSON di Cloud Storage e ifGenerationMatch=0 (solo oggetti NUOVI). La CI ha soltanto
+          # storage.objects.create sulla cartella del sito: non legge e non sovrascrive (la copia di gcloud invece legge la destinazione).
+          export PREFIX="${FOLDER}builds/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          GCS_TOKEN=$(gcloud auth print-access-token)
+          echo "::add-mask::${GCS_TOKEN}"
+          export GCS_TOKEN
+          cat > "${RUNNER_TEMP}/carica.js" <<'JS'
+          const fs = require("fs"), path = require("path");
+          const { BUCKET, PREFIX, GCS_TOKEN, OUT_DIR, RUNNER_TEMP } = process.env; const what = process.argv[2];
+          const put = async (local, name) => {
+            const body = fs.readFileSync(local);
+            const url = "https://storage.googleapis.com/upload/storage/v1/b/" + encodeURIComponent(BUCKET) + "/o?uploadType=media&ifGenerationMatch=0&name=" + encodeURIComponent(PREFIX + "/" + name);
+            for (let i = 1; ; i++) {
+              const r = await globalThis.fetch(url, { method: "POST", headers: { authorization: "Bearer " + GCS_TOKEN, "content-type": "application/octet-stream" }, body });
+              if (r.ok) return;
+              if (r.status === 412 && i > 1) return;   // il tentativo precedente era arrivato: l'impronta la verifica la piattaforma
+              if (r.status === 412) throw new Error("esiste già: " + name);
+              if ((r.status === 429 || r.status >= 500) && i < 5) { await new Promise((s) => setTimeout(s, 500 * 2 ** i)); continue; }
+              throw new Error("HTTP " + r.status + " caricando " + name);
+            }
+          };
+          (async () => {
+            if (what === "files") {
+              const files = JSON.parse(fs.readFileSync(path.join(RUNNER_TEMP, "manifest.json"), "utf8")).files.map((f) => f.path);
+              let next = 0; const worker = async () => { while (next < files.length) { const f = files[next++]; await put(path.join(path.resolve(OUT_DIR), f), "files/" + f); } };
+              await Promise.all(Array.from({ length: 8 }, worker)); console.log(files.length + " file caricati");
+            } else await put(path.join(RUNNER_TEMP, what), what);
+          })().catch((e) => { console.error("::error::" + e.message); process.exit(1); });
           JS
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ inputs.wif-provider }}
-      - uses: google-github-actions/setup-gcloud@v2
-      - name: Carica la build (file, poi manifest, poi prova)
-        env:
-          MANIFEST_SHA: ${{ steps.manifest.outputs.sha256 }}
-        run: |
-          set -euo pipefail
-          DEST="gs://${BUCKET}/${FOLDER}builds/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          gcloud storage cp --recursive "${OUT_DIR}/*" "${DEST}/files/"
-          gcloud storage cp "${RUNNER_TEMP}/manifest.json" "${DEST}/manifest.json"
+          node "${RUNNER_TEMP}/carica.js" files
+          node "${RUNNER_TEMP}/carica.js" manifest.json
           TOKEN=$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=dojobytes-site-build:${MANIFEST_SHA}" | jq -r .value)
           echo "::add-mask::${TOKEN}"
           printf '%s' "${TOKEN}" > "${RUNNER_TEMP}/provenance.jwt"
-          gcloud storage cp "${RUNNER_TEMP}/provenance.jwt" "${DEST}/provenance.jwt"
+          node "${RUNNER_TEMP}/carica.js" provenance.jwt
           echo "TOKEN_FILE=${RUNNER_TEMP}/provenance.jwt" >> "$GITHUB_ENV"
-      - name: Avvisa la piattaforma
-        run: |
-          set -uo pipefail
       - name: Avvisa la piattaforma
         run: |
           set -uo pipefail
