@@ -1,0 +1,126 @@
+# Workflow RIUTILIZZABILE delle build dei siti dei clienti DojoBytes (C-TENANT-LAUNCH L.5c).
+# GENERATO da src/lib/sites/site-templates.ts — si pubblica nel repo pubblico DojoBytes/site-workflows con un tag vN.
+# Costruisce il sito e carica la build nella cartella del suo sito sul bucket delle build, poi avvisa la piattaforma.
+# Non tocca mai Firebase e non usa chiavi: il bucket si raggiunge con l'accesso diretto di Workload Identity Federation
+# (permesso solo sulla cartella del sito, per l'id numerico del repo); la provenienza è il token OIDC di GitHub legato
+# all'impronta del manifest (destinatario dojobytes-site-build:<sha256>), caricato accanto alla build.
+name: site-build
+on:
+  workflow_call:
+    inputs:
+      bucket:
+        type: string
+        required: true
+      folder:
+        type: string
+        required: true
+      wif-provider:
+        type: string
+        required: true
+      platform-url:
+        type: string
+        required: true
+      build-command:
+        type: string
+        default: npm run build
+      output-dir:
+        type: string
+        default: dist
+      node-version:
+        type: string
+        default: "22"
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BUCKET: ${{ inputs.bucket }}
+      FOLDER: ${{ inputs.folder }}
+      OUT_DIR: ${{ inputs.output-dir }}
+      PLATFORM_URL: ${{ inputs.platform-url }}
+      BUILD_COMMAND: ${{ inputs.build-command }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Dipendenze
+        run: npm ci
+      - name: Build
+        run: bash -c "$BUILD_COMMAND"
+      - name: Manifest della build
+        id: manifest
+        run: |
+          node - <<'JS'
+          const fs = require("fs"), path = require("path"), crypto = require("crypto");
+          const root = path.resolve(process.env.OUT_DIR); const files = [];
+          const walk = (d) => { for (const n of fs.readdirSync(d).sort()) { const f = path.join(d, n); const st = fs.lstatSync(f);
+            if (st.isSymbolicLink()) throw new Error("link simbolico nella build: " + path.relative(root, f));
+            if (st.isDirectory()) walk(f); else if (st.isFile()) { const b = fs.readFileSync(f); files.push({ path: path.relative(root, f).split(path.sep).join("/"), sha256: crypto.createHash("sha256").update(b).digest("hex"), size: b.length }); } } };
+          walk(root);
+          let config = {}; try { const h = JSON.parse(fs.readFileSync("firebase.json", "utf8")).hosting || {}; for (const k of ["headers", "cleanUrls", "trailingSlash", "redirects", "rewrites", "i18n", "appAssociation"]) if (h[k] !== undefined) config[k] = h[k]; } catch {}
+          let requires = []; try { requires = JSON.parse(fs.readFileSync("dojobytes.site.json", "utf8")).requires || []; } catch {}
+          const m = JSON.stringify({ schema: "dojobytes.site-build/1", files, config, requires });
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, "manifest.json"), m);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "sha256=" + crypto.createHash("sha256").update(m).digest("hex") + "\n");
+          console.log(files.length + " file nel manifest");
+          JS
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ inputs.wif-provider }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Carica la build (file, poi manifest, poi prova)
+        env:
+          MANIFEST_SHA: ${{ steps.manifest.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          DEST="gs://${BUCKET}/${FOLDER}builds/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gcloud storage cp --recursive "${OUT_DIR}/*" "${DEST}/files/"
+          gcloud storage cp "${RUNNER_TEMP}/manifest.json" "${DEST}/manifest.json"
+          TOKEN=$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=dojobytes-site-build:${MANIFEST_SHA}" | jq -r .value)
+          echo "::add-mask::${TOKEN}"
+          printf '%s' "${TOKEN}" > "${RUNNER_TEMP}/provenance.jwt"
+          gcloud storage cp "${RUNNER_TEMP}/provenance.jwt" "${DEST}/provenance.jwt"
+          echo "TOKEN_FILE=${RUNNER_TEMP}/provenance.jwt" >> "$GITHUB_ENV"
+      - name: Avvisa la piattaforma
+        run: |
+          set -uo pipefailundefined) config[k] = h[k]; } catch {}
+          let requires = []; try { requires = JSON.parse(fs.readFileSync("dojobytes.site.json", "utf8")).requires || []; } catch {}
+          const m = JSON.stringify({ schema: "dojobytes.site-build/1", files, config, requires });
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP, "manifest.json"), m);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, "sha256=" + crypto.createHash("sha256").update(m).digest("hex") + "\n");
+          console.log(files.length + " file nel manifest");
+          JS
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ inputs.wif-provider }}
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Carica la build (file, poi manifest, poi prova)
+        env:
+          MANIFEST_SHA: ${{ steps.manifest.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          DEST="gs://${BUCKET}/${FOLDER}builds/${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          gcloud storage cp --recursive "${OUT_DIR}/*" "${DEST}/files/"
+          gcloud storage cp "${RUNNER_TEMP}/manifest.json" "${DEST}/manifest.json"
+          TOKEN=$(curl -fsS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=dojobytes-site-build:${MANIFEST_SHA}" | jq -r .value)
+          echo "::add-mask::${TOKEN}"
+          printf '%s' "${TOKEN}" > "${RUNNER_TEMP}/provenance.jwt"
+          gcloud storage cp "${RUNNER_TEMP}/provenance.jwt" "${DEST}/provenance.jwt"
+          echo "TOKEN_FILE=${RUNNER_TEMP}/provenance.jwt" >> "$GITHUB_ENV"
+      - name: Avvisa la piattaforma
+        run: |
+          set -uo pipefail
+      - name: Avvisa la piattaforma
+        run: |
+          set -uo pipefail
+          CODE=$(curl -sS -o "${RUNNER_TEMP}/esito.json" -w '%{http_code}' -X POST -H "Authorization: Bearer $(cat "${TOKEN_FILE}")" "${PLATFORM_URL}/api/sites/build" || echo 000)
+          cat "${RUNNER_TEMP}/esito.json" 2>/dev/null; echo
+          if [ "${CODE}" -ge 400 ] && [ "${CODE}" -lt 500 ]; then echo "::error::la piattaforma ha rifiutato la build (HTTP ${CODE})"; exit 1; fi
+          if [ "${CODE}" = "000" ] || [ "${CODE}" -ge 500 ]; then echo "::warning::piattaforma non raggiungibile (HTTP ${CODE}): la build verrà lavorata dal giro orario"; fi
