@@ -46,6 +46,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0   # v3 (L.5i): la storia intera, perché il timbro di versione del sito viene dall'ultimo commit del sorgente (escluso dojobytes.prove.json)
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
@@ -66,7 +67,9 @@ jobs:
           walk(root);
           let config = {}; try { const h = JSON.parse(fs.readFileSync("firebase.json", "utf8")).hosting || {}; for (const k of ["headers", "cleanUrls", "trailingSlash", "redirects", "rewrites", "i18n", "appAssociation"]) if (h[k] !== undefined) config[k] = h[k]; } catch {}
           let requires = []; try { requires = JSON.parse(fs.readFileSync("dojobytes.site.json", "utf8")).requires || []; } catch {}
-          const m = JSON.stringify({ schema: "dojobytes.site-build/1", files, config, requires });
+          // v3 (L.5i): l'esito delle prove scritto da npm run staging, dentro il manifest firmato (la piattaforma lo lega ai byte costruiti); un file rotto non ferma la build: arriva come esito non valido
+          let evidence; try { const b = fs.readFileSync("dojobytes.prove.json"); evidence = b.length > 262144 ? { error: "dojobytes.prove.json oltre 256 KB" } : JSON.parse(b.toString("utf8")); } catch (e) { if (e.code !== "ENOENT") evidence = { error: "dojobytes.prove.json illeggibile: " + String(e.message).slice(0, 200) }; }
+          const m = JSON.stringify({ schema: "dojobytes.site-build/1", files, config, requires, ...(evidence !== undefined ? { evidence } : {}) });
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP, "manifest.json"), m);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, "sha256=" + crypto.createHash("sha256").update(m).digest("hex") + "\n");
           console.log(files.length + " file nel manifest");
